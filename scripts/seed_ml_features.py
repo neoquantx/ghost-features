@@ -54,10 +54,22 @@ feature_urns = {
     "customer_email_domain": make_ml_feature_urn("customer_risk_features", "customer_email_domain"),
 }
 
+# Point each feature source at the specific schemaField URN for the column it
+# depends on (this lets lineage track exactly which column each feature uses).
+# The DataHub GMS may reject schemaField URNs directly in the `sources` field
+# for MLFeatureProperties; to remain compatible we keep `sources` as the dataset
+# URN but record the exact schema field URN in `customProperties.sourceField`.
 sources = {
     "avg_order_value": order_items_urn,
     "customer_lifetime_orders": customers_urn,
     "customer_email_domain": customers_urn,
+}
+
+# Map from feature -> the exact source field path (for downstream tracing)
+source_fields = {
+    "avg_order_value": "unit_price",
+    "customer_lifetime_orders": "customer_id",
+    "customer_email_domain": "cust_email",
 }
 
 # 1. Feature table
@@ -81,6 +93,9 @@ for name, urn in feature_urns.items():
                 else MLFeatureDataTypeClass.TEXT
             ),
             sources=[sources[name]],
+            customProperties={
+                "sourceField": f"urn:li:schemaField:({sources[name]},{source_fields[name]})"
+            },
         ),
     )
 

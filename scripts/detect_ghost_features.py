@@ -19,15 +19,6 @@ graph = DataHubGraph(DatahubClientConfig(server="http://localhost:8080"))
 
 FEATURE_TABLE_URN = "urn:li:mlFeatureTable:(urn:li:dataPlatform:feast,customer_risk_features)"
 
-# Map of feature name -> the specific column name it depends on in its source.
-# In a real system this would be parsed from feature definitions; here we
-# encode it explicitly since we know what we seeded.
-FEATURE_COLUMN_MAP = {
-    "avg_order_value": "unit_price",
-    "customer_lifetime_orders": "customer_id",
-    "customer_email_domain": "cust_email",
-}
-
 def get_feature_table_features(feature_table_urn):
     aspect = graph.get_aspect(
         entity_urn=feature_table_urn,
@@ -57,26 +48,43 @@ def get_current_schema_fields(dataset_urn):
     return {f.fieldPath.split(".")[-1] for f in aspect.fields}
 
 def check_feature(feature_urn):
-    source_urn = get_feature_source(feature_urn)
-    if source_urn is None:
+    # Get the MLFeatureProperties aspect which contains `sources` and `customProperties`
+    aspect = graph.get_aspect(entity_urn=feature_urn, aspect_type=MLFeaturePropertiesClass)
+    if aspect is None:
+        return {"feature": feature_urn, "status": "NO_ASPECT", "detail": "Feature has no mlFeatureProperties aspect"}
+
+    if not getattr(aspect, "sources", None):
         return {"feature": feature_urn, "status": "NO_SOURCE", "detail": "Feature has no declared source"}
 
-    feature_name = feature_urn.split(",")[-1].rstrip(")")
-    expected_column = FEATURE_COLUMN_MAP.get(feature_name)
+    source_urn = aspect.sources[0]
+
+    # Expect the exact source field to be recorded in customProperties.sourceField
+    expected_field_val = None
+    if getattr(aspect, "customProperties", None):
+        expected_field_val = aspect.customProperties.get("sourceField")
+
+    if not expected_field_val:
+        return {"feature": feature_urn, "status": "UNKNOWN", "detail": "No sourceField defined in feature customProperties"}
+
+    # `sourceField` may be a full schemaField URN like
+    # urn:li:schemaField:(<dataset_urn>,field_path) or just a field name.
+    if isinstance(expected_field_val, str) and "schemaField" in expected_field_val:
+        # parse trailing field path after the last comma
+        expected_column = expected_field_val.split(",")[-1].rstrip(")")
+    else:
+        expected_column = expected_field_val
 
     current_fields = get_current_schema_fields(source_urn)
 
-    if expected_column is None:
-        return {"feature": feature_urn, "status": "UNKNOWN", "detail": "No column mapping defined for this feature"}
-
     if expected_column in current_fields:
-        return {"feature": feature_urn, "status": "OK", "detail": f"Column '{expected_column}' present in {source_urn}"}
+        return {"feature": feature_urn, "status": "OK", "detail": f"Column '{expected_column}' present in {source_urn}", "expected_column": expected_column}
     else:
         return {
             "feature": feature_urn,
             "status": "GHOSTED",
             "detail": f"Column '{expected_column}' NOT FOUND in current schema of {source_urn}",
             "source": source_urn,
+            "expected_column": expected_column,
         }
 
 def main():
@@ -99,54 +107,62 @@ def main():
     if ghosted:
         print(f"⚠️  {len(ghosted)} ghost feature(s) detected!")
 
-        # Check impact on known production model(s)
-        MODEL_URN = "urn:li:mlModel:(urn:li:dataPlatform:mlflow,fraud_risk_model_v1,PROD)"
-        model_aspect = graph.get_aspect(entity_urn=MODEL_URN, aspect_type=MLModelPropertiesClass)
-
+        # Discover all mlModel entities and check each for usage of ghosted features.
         def model_uses_feature(model_aspect, feature_urn):
             if model_aspect is None or not getattr(model_aspect, "mlFeatures", None):
                 return False
             for mf in model_aspect.mlFeatures:
-                # mf may be a string URN or an object with a featureUrn/feature field
                 if isinstance(mf, str) and mf == feature_urn:
                     return True
                 if hasattr(mf, "featureUrn") and getattr(mf, "featureUrn") == feature_urn:
                     return True
                 if hasattr(mf, "feature") and getattr(mf, "feature") == feature_urn:
                     return True
-                # fallback string compare
                 if str(mf) == feature_urn:
                     return True
             return False
 
+        # Use graph.get_urns_by_filter to discover mlModel URNs across the catalog.
+        all_model_urns = list(graph.get_urns_by_filter(entity_types=["mlModel"]))
+
         for g in ghosted:
             feature_urn = g["feature"]
-            if model_uses_feature(model_aspect, feature_urn):
-                # extract model name for display
+            impacted_models = []
+            for model_urn in all_model_urns:
+                model_aspect = graph.get_aspect(entity_urn=model_urn, aspect_type=MLModelPropertiesClass)
+                if model_uses_feature(model_aspect, feature_urn):
+                    impacted_models.append(model_urn)
+
+            # Print impact lines for every affected model
+            for murn in impacted_models:
                 try:
-                    model_name = MODEL_URN.split(",")[1]
+                    mname = murn.split(",")[1]
                 except Exception:
-                    model_name = MODEL_URN
+                    mname = murn
                 print("")
                 print("⚠️  IMPACT: This feature is used by production model")
-                print(f"    '{model_name}' ({MODEL_URN})")
+                print(f"    '{mname}' ({murn})")
                 print("    This model may be silently consuming stale/missing data.")
 
-                # Create a native DataHub Document describing the finding
+            if impacted_models:
+                # Create a native DataHub Document describing the finding, listing all impacted models
                 feature_name = feature_urn.split(",")[-1].rstrip(")")
+                expected_column = g.get("expected_column", "<unknown>")
                 doc_id = f"ghost-feature-{re.sub('[^0-9a-zA-Z_-]+', '-', feature_name)}-{int(time.time())}"
                 title = f"Ghost Feature Detected: {feature_name}"
+
+                model_list_text = "\n".join([f"- {u}" for u in impacted_models])
                 text = (
-                    f"Feature `{feature_urn}` is ghosted: expected column '{FEATURE_COLUMN_MAP.get(feature_name)}' "
-                    f"is missing from its source table.\n\nThis affects production model `{model_name}` ({MODEL_URN}), "
-                    "which may be silently consuming stale or missing data."
+                    f"Feature `{feature_urn}` is ghosted: expected column '{expected_column}' "
+                    f"is missing from its source table.\n\nImpacted production models:\n{model_list_text}\n\n"
+                    "These models may be silently consuming stale or missing data."
                 )
 
                 doc = dhsdk.Document.create_document(
                     id=doc_id,
                     title=title,
                     text=text,
-                    related_assets=[feature_urn, MODEL_URN],
+                    related_assets=[feature_urn] + impacted_models,
                 )
 
                 # Emit MCPS for the document
