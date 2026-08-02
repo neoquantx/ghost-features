@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "datahub": {
+      "command": "/Users/himanshunikam/.local/bin/uvx",
+      "args": ["mcp-server-datahub@latest"],
+      "env": {
+        "DATAHUB_GMS_URL": "http://localhost:8080"
+      }
+    }
+  }
+}
