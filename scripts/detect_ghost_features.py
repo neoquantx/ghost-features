@@ -9,7 +9,11 @@ from datahub.metadata.schema_classes import (
     MLFeatureTablePropertiesClass,
     MLFeaturePropertiesClass,
     SchemaMetadataClass,
+    MLModelPropertiesClass,
 )
+from datahub import sdk as dhsdk
+import time
+import re
 
 graph = DataHubGraph(DatahubClientConfig(server="http://localhost:8080"))
 
@@ -94,6 +98,62 @@ def main():
     ghosted = [r for r in results if r["status"] == "GHOSTED"]
     if ghosted:
         print(f"⚠️  {len(ghosted)} ghost feature(s) detected!")
+
+        # Check impact on known production model(s)
+        MODEL_URN = "urn:li:mlModel:(urn:li:dataPlatform:mlflow,fraud_risk_model_v1,PROD)"
+        model_aspect = graph.get_aspect(entity_urn=MODEL_URN, aspect_type=MLModelPropertiesClass)
+
+        def model_uses_feature(model_aspect, feature_urn):
+            if model_aspect is None or not getattr(model_aspect, "mlFeatures", None):
+                return False
+            for mf in model_aspect.mlFeatures:
+                # mf may be a string URN or an object with a featureUrn/feature field
+                if isinstance(mf, str) and mf == feature_urn:
+                    return True
+                if hasattr(mf, "featureUrn") and getattr(mf, "featureUrn") == feature_urn:
+                    return True
+                if hasattr(mf, "feature") and getattr(mf, "feature") == feature_urn:
+                    return True
+                # fallback string compare
+                if str(mf) == feature_urn:
+                    return True
+            return False
+
+        for g in ghosted:
+            feature_urn = g["feature"]
+            if model_uses_feature(model_aspect, feature_urn):
+                # extract model name for display
+                try:
+                    model_name = MODEL_URN.split(",")[1]
+                except Exception:
+                    model_name = MODEL_URN
+                print("")
+                print("⚠️  IMPACT: This feature is used by production model")
+                print(f"    '{model_name}' ({MODEL_URN})")
+                print("    This model may be silently consuming stale/missing data.")
+
+                # Create a native DataHub Document describing the finding
+                feature_name = feature_urn.split(",")[-1].rstrip(")")
+                doc_id = f"ghost-feature-{re.sub('[^0-9a-zA-Z_-]+', '-', feature_name)}-{int(time.time())}"
+                title = f"Ghost Feature Detected: {feature_name}"
+                text = (
+                    f"Feature `{feature_urn}` is ghosted: expected column '{FEATURE_COLUMN_MAP.get(feature_name)}' "
+                    f"is missing from its source table.\n\nThis affects production model `{model_name}` ({MODEL_URN}), "
+                    "which may be silently consuming stale or missing data."
+                )
+
+                doc = dhsdk.Document.create_document(
+                    id=doc_id,
+                    title=title,
+                    text=text,
+                    related_assets=[feature_urn, MODEL_URN],
+                )
+
+                # Emit MCPS for the document
+                for mcp in doc.as_mcps():
+                    graph.emit(mcp)
+
+                print(f"    Document created: {doc.urn}")
     else:
         print("✅ No ghost features detected.")
 
