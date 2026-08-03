@@ -1,0 +1,29 @@
+Checking feature table: urn:li:mlFeatureTable:(urn:li:dataPlatform:feast,customer_risk_features)
+
+STATUS         FEATURE
+----------------------------------------------------------------------
+TYPE_CHANGED   urn:li:mlFeature:(customer_risk_features,avg_order_value)
+               → Column 'unit_price' changed type from 'FLOAT' to 'VARCHAR(16777216)' in urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.order_items,PROD)
+
+GHOSTED        urn:li:mlFeature:(customer_risk_features,customer_lifetime_orders)
+               → Column 'customer_id' NOT FOUND in current schema of urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.customers,PROD)
+
+GHOSTED        urn:li:mlFeature:(customer_risk_features,customer_email_domain)
+               → Column 'cust_email' NOT FOUND in current schema of urn:li:dataset:(urn:li:dataPlatform:snowflake,b2fd91.order_entry_db.order_entry.customers,PROD)
+
+⚠️  3 problematic feature(s) detected!
+
+⚠️  IMPACT: This feature is used by production model
+    'fraud_risk_model_v1' (urn:li:mlModel:(urn:li:dataPlatform:mlflow,fraud_risk_model_v1,PROD))
+    This model may be silently consuming stale/missing data.
+    Document created: urn:li:document:shared-246c8e5e-cd3e-405b-af82-34fe3b0488da
+
+⚠️  IMPACT: This feature is used by production model
+    'fraud_risk_model_v1' (urn:li:mlModel:(urn:li:dataPlatform:mlflow,fraud_risk_model_v1,PROD))
+    This model may be silently consuming stale/missing data.
+    Document created: urn:li:document:shared-a1178024-7209-4d14-9f05-96fe4ef510a9
+
+⚠️  IMPACT: This feature is used by production model
+    'fraud_risk_model_v1' (urn:li:mlModel:(urn:li:dataPlatform:mlflow,fraud_risk_model_v1,PROD))
+    This model may be silently consuming stale/missing data.
+    Document created: urn:li:document:shared-601fbeed-62c2-4e89-9984-dcc137d8825c
