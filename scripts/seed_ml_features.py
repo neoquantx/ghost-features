@@ -13,6 +13,8 @@ from datahub.emitter.mce_builder import (
 )
 from datahub.emitter.mcp import MetadataChangeProposalWrapper
 from datahub.emitter.rest_emitter import DatahubRestEmitter
+from datahub.ingestion.graph.client import DataHubGraph, DatahubClientConfig
+from datahub.metadata.schema_classes import SchemaFieldClass, SchemaMetadataClass
 from datahub.metadata.schema_classes import (
     MLFeatureTablePropertiesClass,
     MLFeaturePropertiesClass,
@@ -22,6 +24,7 @@ from datahub.metadata.schema_classes import (
 )
 
 emitter = DatahubRestEmitter(gms_server="http://localhost:8080")
+graph = DataHubGraph(DatahubClientConfig(server="http://localhost:8080"))
 
 
 def emit_with_status(urn, aspect):
@@ -84,6 +87,25 @@ emit_with_status(
 # 2. Individual features pointing at real source columns
 for name, urn in feature_urns.items():
     is_numeric = "value" in name or "orders" in name
+    # Determine the current native data type for the source field
+    try:
+        schema_aspect = graph.get_aspect(entity_urn=sources[name], aspect_type=SchemaMetadataClass)
+        field_type = None
+        if schema_aspect and getattr(schema_aspect, 'fields', None):
+            for f in schema_aspect.fields:
+                # compare last segment
+                if f.fieldPath.split('.')[-1] == source_fields[name]:
+                    field_type = getattr(f, 'nativeDataType', None)
+                    break
+    except Exception:
+        field_type = None
+
+    custom_props = {
+        "sourceField": f"urn:li:schemaField:({sources[name]},{source_fields[name]})"
+    }
+    if field_type:
+        custom_props["sourceFieldType"] = field_type
+
     emit_with_status(
         urn,
         MLFeaturePropertiesClass(
@@ -93,9 +115,7 @@ for name, urn in feature_urns.items():
                 else MLFeatureDataTypeClass.TEXT
             ),
             sources=[sources[name]],
-            customProperties={
-                "sourceField": f"urn:li:schemaField:({sources[name]},{source_fields[name]})"
-            },
+            customProperties=custom_props,
         ),
     )
 
